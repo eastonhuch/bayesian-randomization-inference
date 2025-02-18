@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 from cycler import cycler
+import os.path
 
 
 # Set a new default color palette
@@ -29,6 +30,6 @@ def get_fig_ax(figsize=(5, 3.5)):
 
 # Function for saving figures
 def save_my_fig(fig, filename):
-    fig.savefig(f"./figures/{filename}.pdf")
-    fig.savefig(f"./figures/{filename}.png")
-    fig.savefig(f"./figures/{filename}.eps")
+    fig.savefig(os.path.join("./figures/", f"{filename}.pdf"))
+    fig.savefig(os.path.join("./figures/", f"{filename}.png"))
+    fig.savefig(os.path.join("./figures/", f"{filename}.eps"))
