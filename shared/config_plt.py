@@ -14,9 +14,11 @@ def config_plt():
         "font.family": "serif",
         "axes.labelsize": 16,
         # "figure.constrained_layout.use": True,
+        "axes.titlesize": 16,
         "xtick.labelsize": 13,
         "ytick.labelsize": 13,
         "legend.fontsize": 13,
+        "legend.title_fontsize": 13,
         "axes.edgecolor": "#222222",
     })
 
@@ -30,6 +32,8 @@ def get_fig_ax(figsize=(5, 3.5)):
 
 # Function for saving figures
 def save_my_fig(fig, filename):
-    fig.savefig(os.path.join("./figures/", f"{filename}.pdf"))
-    fig.savefig(os.path.join("./figures/", f"{filename}.png"))
-    fig.savefig(os.path.join("./figures/", f"{filename}.eps"))
+    joined_filename = os.path.join("./figures/", filename)
+    print(joined_filename)
+    fig.savefig(f"{joined_filename}.pdf")
+    fig.savefig(f"{joined_filename}.png")
+    fig.savefig(f"{joined_filename}.eps")
