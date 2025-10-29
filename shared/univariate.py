@@ -6,6 +6,11 @@ from shared.utils import rank
 import warnings
 
 
+# Need to revise so that analyze accepts ya, a, ya_s, a_s
+# ya_s and a_s are used only to compute the observed statistic
+# These versions should have exact coverage
+
+
 class DiscretizedDist():
     def __init__(self, base_dist, vals, rng):
         self.base_dist = base_dist
@@ -39,7 +44,7 @@ class DiscretizedDist():
 class Analyzer(ABC):
     name: str
     
-    def __init__(self, name, alpha, prior_dist):
+    def __init__(self, name, alpha, prior_dist, accept_s_dim_separate=False):
         self.name = name
         self.alpha = alpha
         self.lower_quantile = alpha/2.
@@ -47,6 +52,7 @@ class Analyzer(ABC):
         self.ci_quantiles = np.array([self.lower_quantile, self.upper_quantile])
         self.z_star = norm.ppf(1. - alpha/2.)
         self.prior_dist = prior_dist
+        self.accept_s_dim_separate = accept_s_dim_separate
         
     def get_ys(self, y, a, thetas):
         thetas_repped = np.repeat(thetas.copy()[:, np.newaxis], y.size, axis=1)
@@ -55,14 +61,14 @@ class Analyzer(ABC):
         return y0, y1
     
     @abstractmethod
-    def analyze(self, y, a, thetas) -> (float, float, float, float):
+    def analyze(self, y, a, thetas, **kwargs) -> (float, float, float, float):
         """Return estimate, lower bound, upper bound, and nominal coverage rate"""
         pass
 
     
 class ProbAnalyzer(Analyzer):   
-    def __init__(self, name, alpha, prior_dist):
-        super().__init__(name, alpha, prior_dist)
+    def __init__(self, name, alpha, prior_dist, accept_s_dim_separate=False):
+        super().__init__(name, alpha, prior_dist, accept_s_dim_separate=accept_s_dim_separate)
         
     def normalize_probs(self, raw_probs):
         raw_probs = np.asarray(raw_probs)
@@ -85,25 +91,27 @@ class ProbAnalyzer(Analyzer):
 
 
 class PriorAnalyzer(ProbAnalyzer):
-    def __init__(self, name: str, alpha: float, prior_dist):
-        super().__init__(name, alpha, prior_dist)
+    def __init__(self, name: str, alpha: float, prior_dist, accept_s_dim_separate=False):
+        super().__init__(name, alpha, prior_dist, accept_s_dim_separate=accept_s_dim_separate)
     
-    def analyze(self, y, a, thetas):
+    def analyze(self, y, a, thetas, **kwargs):
         raw_probs = self.prior_dist.pdf(thetas)
         return self.process_probs(raw_probs, thetas)
 
 class BayesAnalyzer(ProbAnalyzer):
     @abstractmethod
-    def get_likelihoods(self, y, a, thetas):
+    def get_likelihoods(self, y, a, thetas, s_dim_separate=None):
         pass
     
-    def analyze(self, y, a, thetas):
-        posterior_probs = self.get_posterior_probs(y, a, thetas)
+    def analyze(self, y, a, thetas, s_dim_separate=None, **kwargs):
+        if not self.accept_s_dim_separate:
+            s_dim_separate = None
+        posterior_probs = self.get_posterior_probs(y, a, thetas, s_dim_separate=s_dim_separate)
         return self.summarize_posterior(posterior_probs, thetas)
     
-    def get_posterior_probs(self, y, a, thetas):
+    def get_posterior_probs(self, y, a, thetas, s_dim_separate=None):
         prior_probs = self.prior_dist.pdf(thetas)
-        posterior_probs_raw = prior_probs * self.get_likelihoods(y, a, thetas)
+        posterior_probs_raw = prior_probs * self.get_likelihoods(y, a, thetas, s_dim_separate=s_dim_separate)
         posterior_probs = self.normalize_probs(posterior_probs_raw)
         return posterior_probs
     
@@ -129,8 +137,8 @@ class CalculatesDiffMeans():
     
 
 class BRIAnalyzer(BayesAnalyzer, CalculatesDiffMeans):
-    def __init__(self, name: str, alpha: float, prior_dist, n_each: int, n_theta_vals: int, a_vals: np.ndarray):
-        super().__init__(name, alpha, prior_dist)
+    def __init__(self, name: str, alpha: float, prior_dist, n_each: int, n_theta_vals: int, a_vals: np.ndarray, accept_s_dim_separate=False):
+        super().__init__(name, alpha, prior_dist, accept_s_dim_separate=accept_s_dim_separate)
         self.n_each = n_each
         self.n = 2*n_each
         self.n_theta_vals = n_theta_vals
@@ -154,7 +162,7 @@ class BRIAnalyzer(BayesAnalyzer, CalculatesDiffMeans):
    
     
 class RankSumAnalyzer(BRIAnalyzer):
-    def get_likelihoods(self, y, a, thetas):
+    def get_likelihoods(self, y, a, thetas, s_dim_separate=None):
         ranks_observed = rank(y)
         rank_sum_observed = (ranks_observed * a).sum()
         
@@ -168,11 +176,11 @@ class RankSumAnalyzer(BRIAnalyzer):
 
     
 class BRIOneSidedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
-    def __init__(self, name: str, alpha: float, prior_dist, n_each: int, n_theta_vals: int, a_vals: np.ndarray, nu:float = 0.1):
-        super().__init__(name, alpha, prior_dist, n_each, n_theta_vals, a_vals)
+    def __init__(self, name: str, alpha: float, prior_dist, n_each: int, n_theta_vals: int, a_vals: np.ndarray, nu:float = 0.1, accept_s_dim_separate=False):
+        super().__init__(name, alpha, prior_dist, n_each, n_theta_vals, a_vals, accept_s_dim_separate=accept_s_dim_separate)
         self.nu = nu
     
-    def get_likelihoods(self, y, a, thetas, tol=1e-16):
+    def get_likelihoods(self, y, a, thetas, tol=1e-16, s_dim_separate=None):
         n_each = self.get_n_each(a)
         treatment_mean_observed = self.get_treatment_mean(y, a)
         y0_3d, y1_3d = self.get_ys_3d(y, a, thetas)
@@ -193,11 +201,11 @@ class BRIOneSidedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
 
 
 class RoundedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
-    def __init__(self, name: str, alpha: float, prior_dist, n_each: int, n_theta_vals: int, a_vals: np.ndarray, digits:int=1):
-        super().__init__(name, alpha, prior_dist, n_each, n_theta_vals, a_vals)
+    def __init__(self, name: str, alpha: float, prior_dist, n_each: int, n_theta_vals: int, a_vals: np.ndarray, digits:int=1, accept_s_dim_separate=False):
+        super().__init__(name, alpha, prior_dist, n_each, n_theta_vals, a_vals, accept_s_dim_separate=accept_s_dim_separate)
         self.digits = digits
     
-    def get_likelihoods(self, y, a, thetas):
+    def get_likelihoods(self, y, a, thetas, s_dim_separate=None):
         diff_means_observed, diff_means = self.get_stats(y, a, thetas)
         diff_means_observed_rounded = np.round(diff_means_observed, self.digits)
         diff_means_rounded = np.round(diff_means, self.digits)
@@ -206,11 +214,11 @@ class RoundedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
 
     
 class NeighborhoodAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
-    def __init__(self, name: str, alpha: float, prior_dist, n_each: int, n_theta_vals: int, a_vals: np.ndarray, eps: float):
-        super().__init__(name, alpha, prior_dist, n_each, n_theta_vals, a_vals)
+    def __init__(self, name: str, alpha: float, prior_dist, n_each: int, n_theta_vals: int, a_vals: np.ndarray, eps: float, accept_s_dim_separate=False):
+        super().__init__(name, alpha, prior_dist, n_each, n_theta_vals, a_vals, accept_s_dim_separate=accept_s_dim_separate)
         self.eps = eps
     
-    def get_likelihoods(self, y, a, thetas):
+    def get_likelihoods(self, y, a, thetas, s_dim_separate=None):
         diff_means_observed, diff_means = self.get_stats(y, a, thetas)
         below = diff_means < (diff_means_observed + self.eps)
         above = (diff_means_observed - self.eps) < diff_means
@@ -220,10 +228,13 @@ class NeighborhoodAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
     
     
 class BRIAsympAnalyzer(BayesAnalyzer, CalculatesDiffMeans):
-    def get_likelihoods(self, y, a, thetas):
+    def get_likelihoods(self, y, a, thetas, s_dim_separate=None):
         n_each = int(a.sum())
         n = 2*n_each
-        diff_means_obs = self.get_diff_means(y, a)
+        if s_dim_separate is None:
+            diff_means_obs = self.get_diff_means(y, a)
+        else:
+            diff_means_obs = s_dim_separate
         y0, y1 = self.get_ys(y, a, thetas)
         avg_diff_means = (y1 - y0).mean(axis=1)
         s2_0 = y0.var(axis=1, ddof=1)
@@ -245,7 +256,7 @@ class FreqAnalyzer():
     
     
 class DiffMeansAnalyzer(FreqAnalyzer, Analyzer):
-    def analyze(self, y, a, thetas):
+    def analyze(self, y, a, thetas, **kwargs):
         est, var = self.get_est_var(y, a, thetas)
         se = np.sqrt(var)
         lb = est - self.z_star * se
@@ -255,7 +266,7 @@ class DiffMeansAnalyzer(FreqAnalyzer, Analyzer):
 
     
 class LIBDiffMeansAnalyzer(FreqAnalyzer, BayesAnalyzer):
-    def get_likelihoods(self, y, a, thetas):
+    def get_likelihoods(self, y, a, thetas, s_dim_separate=None):
         est, var = self.get_est_var(y, a, thetas)
         sd = np.sqrt(var)
         likelihoods = norm.pdf(thetas, est, sd)
