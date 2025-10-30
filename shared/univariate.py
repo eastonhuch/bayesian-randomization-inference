@@ -2,41 +2,35 @@ import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
 from scipy.stats import norm, uniform
-from shared.utils import rank
+from shared.utils import rank, safe_log
 import warnings
 
 
-# Need to revise so that analyze accepts ya, a, ya_s, a_s
-# ya_s and a_s are used only to compute the observed statistic
-# These versions should have exact coverage
-
 class DiscretizedDist():
-    def __init__(self, base_dist, vals, rng):
+    def __init__(self, base_dist, vals):
         self.base_dist = base_dist
         self.vals = vals.copy()
-        self.rng = rng
         raw_probs = base_dist.pdf(vals)
-        probs = raw_probs / raw_probs.sum()
-        self.probs = probs
-        self.cumprobs = np.cumsum(probs)
-        self.pdf_lookup = pd.Series(probs, index=vals)
-        
+        normalizing_constant = raw_probs.sum()
+        log_normalizing_constant = np.log(normalizing_constant)
+        self.log_probs = base_dist.logpdf(vals) - log_normalizing_constant
+        self.probs = raw_probs / normalizing_constant
+        self.cumprobs = np.cumsum(self.probs)
+        self.logpdf_lookup = pd.Series(self.log_probs, index=vals)
+        self.pdf_lookup = pd.Series(self.probs, index=vals)
+
+    def logpdf(self, x):
+        return self.logpdf_lookup[x]
+    
     def pdf(self, x):
         return self.pdf_lookup[x]
     
-    def rv(self):
-        u = self.rng.random()
-        if u == self.cumprobs[-1]:  # Edge case
-            idx = self.cumprobs.size - 1
-        else:
-            idx = np.argmax(u < self.cumprobs)
-        return self.vals[idx]
-    
-    def rvs(self, size=1):
-        if size > 1:
-            x = np.array([self.rv() for _ in range(size)])
-        else:
-            x = self.rv()
+    def rvs(self, rng, size=1):
+        us = rng.random(size)
+        idxs = np.searchsorted(self.cumprobs, us, side="left")
+        x = self.vals[idxs]
+        if size == 1:
+            x = x[0]
         return x
 
     
@@ -105,21 +99,20 @@ class PriorAnalyzer(ProbAnalyzer):
 
 class BayesAnalyzer(ProbAnalyzer):
     @abstractmethod
-    def get_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
+    def get_log_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
         pass
     
     def analyze(self, y, a, thetas, y_s=None, a_s=None):
         posterior_probs = self.get_posterior_probs(y, a, thetas, y_s=y_s, a_s=a_s)
-        return self.summarize_posterior(posterior_probs, thetas)
+        return self.process_probs(posterior_probs, thetas)
     
     def get_posterior_probs(self, y, a, thetas, y_s=None, a_s=None):
-        prior_probs = self.prior_dist.pdf(thetas)
-        posterior_probs_raw = prior_probs * self.get_likelihoods(y, a, thetas, y_s=y_s, a_s=a_s)
+        prior_log_probs = self.prior_dist.logpdf(thetas)
+        log_likelihoods = self.get_log_likelihoods(y, a, thetas, y_s=y_s, a_s=a_s)
+        posterior_log_probs_raw = prior_log_probs + log_likelihoods
+        posterior_probs_raw = np.exp(posterior_log_probs_raw)
         posterior_probs = self.normalize_probs(posterior_probs_raw)
         return posterior_probs
-    
-    def summarize_posterior(self, posterior_probs, thetas):
-        return self.process_probs(posterior_probs, thetas)
     
     
 class CalculatesDiffMeans():
@@ -164,7 +157,7 @@ class BRIAnalyzer(BayesAnalyzer, CalculatesDiffMeans):
    
     
 class RankSumAnalyzer(BRIAnalyzer):
-    def get_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
+    def get_log_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
         if (y_s is None) and (a_s is None):
             rank_sum_observed = (rank(y) * a).sum()
         else:
@@ -175,7 +168,7 @@ class RankSumAnalyzer(BRIAnalyzer):
         rank_sums = (ranks * self.a_vals_3d).sum(axis=2)
         
         likelihoods = (rank_sums == rank_sum_observed).mean(axis=1)
-        return likelihoods
+        return safe_log(likelihoods)
 
     
 class BRIOneSidedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
@@ -183,7 +176,7 @@ class BRIOneSidedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
         super().__init__(name, alpha, prior_dist, n_each, n_theta_vals, a_vals, uses_s=uses_s)
         self.nu = nu
     
-    def get_likelihoods(self, y, a, thetas, y_s=None, a_s=None, tol=1e-16):
+    def get_log_likelihoods(self, y, a, thetas, y_s=None, a_s=None, tol=1e-16):
         n_each = self.get_n_each(a)
         if (y_s is None) and (a_s is None):
             treatment_mean_observed = self.get_treatment_mean(y, a)
@@ -203,7 +196,7 @@ class BRIOneSidedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
         warnings.simplefilter("default")
         
         likelihoods = likelihood_components.mean(axis=1)
-        return likelihoods
+        return safe_log(likelihoods)
 
 
 class RoundedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
@@ -211,7 +204,7 @@ class RoundedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
         super().__init__(name, alpha, prior_dist, n_each, n_theta_vals, a_vals, uses_s=uses_s)
         self.digits = digits
     
-    def get_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
+    def get_log_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
         if (y_s is None) and (a_s is None):
             diff_means_observed = self.get_diff_means(y, a)
         else:
@@ -220,7 +213,7 @@ class RoundedAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
         diff_means_observed_rounded = np.round(diff_means_observed, self.digits)
         diff_means_rounded = np.round(diff_means, self.digits)
         likelihoods = (diff_means_rounded == diff_means_observed_rounded).mean(axis=1)
-        return likelihoods
+        return safe_log(likelihoods)
 
     
 class NeighborhoodAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
@@ -228,7 +221,7 @@ class NeighborhoodAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
         super().__init__(name, alpha, prior_dist, n_each, n_theta_vals, a_vals, uses_s=uses_s)
         self.eps = eps
     
-    def get_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
+    def get_log_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
         if (y_s is None) and (a_s is None):
             diff_means_observed = self.get_diff_means(y, a)
         else:
@@ -238,11 +231,11 @@ class NeighborhoodAnalyzer(BRIAnalyzer, CalculatesDiffMeans):
         above = (diff_means_observed - self.eps) < diff_means
         in_neighborhood = below & above
         likelihoods = in_neighborhood.mean(axis=1)
-        return likelihoods
+        return safe_log(likelihoods)
     
     
 class BRIAsympAnalyzer(BayesAnalyzer, CalculatesDiffMeans):
-    def get_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
+    def get_log_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
         n_each = int(a.sum())
         n = 2*n_each
         if (y_s is None) and (a_s is None):
@@ -256,8 +249,8 @@ class BRIAsympAnalyzer(BayesAnalyzer, CalculatesDiffMeans):
         s2_01 = (y1-y0).var(axis=1, ddof=1)
         var_diff_means = s2_0/n_each + s2_1/n_each - s2_01/n
         sd_diff_means = np.sqrt(var_diff_means)
-        likelihoods = norm.pdf(diff_means_obs, loc=avg_diff_means, scale=sd_diff_means)
-        return likelihoods
+        log_likelihoods = norm.logpdf(diff_means_obs, loc=avg_diff_means, scale=sd_diff_means)
+        return log_likelihoods
 
 
 class FreqAnalyzer():
@@ -280,8 +273,8 @@ class DiffMeansAnalyzer(FreqAnalyzer, Analyzer):
 
     
 class LIBDiffMeansAnalyzer(FreqAnalyzer, BayesAnalyzer):
-    def get_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
+    def get_log_likelihoods(self, y, a, thetas, y_s=None, a_s=None):
         est, var = self.get_est_var(y, a, thetas)
         sd = np.sqrt(var)
-        likelihoods = norm.pdf(thetas, est, sd)
-        return likelihoods
+        log_likelihoods = norm.logpdf(thetas, est, sd)
+        return log_likelihoods
