@@ -14,7 +14,7 @@ def print_se_parentheses(x: np.ndarray, x_ses: np.ndarray, digits=3, stars=False
     x_se_parentheses = np.char.add(x_str, np.char.add(" (", np.char.add(x_se_str, ")")))
     if stars:
         z_star = norm.ppf(1. - alpha/2.)
-        stars_chars = [("*" if abs(x[i]/x_ses[i]) >= z_star else "") for i in range(x.size)]
+        stars_chars = [("*" if ((abs(x_ses[i]) > 0) and abs(x[i]/x_ses[i])) >= z_star else "") for i in range(x.size)]
         x_se_parentheses = np.char.add(x_se_parentheses, np.array(stars_chars))
     return x_se_parentheses
 
@@ -22,3 +22,10 @@ def rank(arr, axis=-1):
     order = np.argsort(arr, axis=axis)
     ranks = np.argsort(order, axis=axis)
     return ranks
+
+def safe_log(x):
+    x_float = x.astype(np.float64)
+    is_positive = x_float > 0
+    log_x = np.log(x_float, where=is_positive)
+    log_x[~is_positive] = -np.inf
+    return log_x
